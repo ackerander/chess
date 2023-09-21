@@ -1,3 +1,4 @@
+use crate::ALL_PIECES;
 use crate::bitboard::{BitBoard, EMPTY};
 use crate::board::Board;
 use crate::chess_move::ChessMove;
@@ -8,7 +9,8 @@ use crate::square::Square;
 use arrayvec::ArrayVec;
 use nodrop::NoDrop;
 use std::iter::ExactSizeIterator;
-use std::mem;
+use std::mem::{self, MaybeUninit, transmute};
+use std::iter::Chain;
 
 #[derive(Copy, Clone, PartialEq, PartialOrd)]
 pub struct SquareAndBitBoard {
@@ -286,6 +288,15 @@ impl ExactSizeIterator for MoveGen {
         }
         result
     }
+
+    fn is_empty(&self) -> bool {
+        for i in 0..self.moves.len() {
+            if self.moves[i].bitboard & self.iterator_mask != EMPTY {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 impl Iterator for MoveGen {
@@ -335,6 +346,163 @@ impl Iterator for MoveGen {
             }
             Some(ChessMove::new(moves.square, dest, None))
         }
+    }
+}
+
+pub struct OrdMoves<'a> {
+    moves: MoveGen,
+    bit_idx: u8,
+    board: &'a Board,
+    piece_idx: (u8, u8),
+    count: [u8; 4],
+    sorted_mvs: [MaybeUninit<ChessMove>; 64],
+}
+
+impl OrdMoves<'_> {
+    #[inline(always)]
+    pub fn new_ordered(board: &Board) -> Option<OrdMoves> {
+        let mut mvs = MoveGen::new_legal(board);
+        if mvs.is_empty() {
+            None
+        } else {
+            mvs.set_iterator_mask(*board.pieces(Piece::Queen));
+            Some(OrdMoves {
+                moves: mvs,
+                bit_idx: 0,
+                board: &board,
+                piece_idx: (4, 0),
+                count: [0; 4],
+                sorted_mvs: unsafe { MaybeUninit::uninit().assume_init() },
+            })
+        }
+    }
+}
+
+impl OrdMoves<'_> {
+    fn yeild(&mut self) -> Option<ChessMove> { // Gets a move without erasing moves
+        if self.moves.index >= self.moves.moves.len()
+            || self.moves.moves[self.moves.index].bitboard & self.moves.iterator_mask == EMPTY
+        {
+            // are we done?
+            None
+        } else if self.moves.moves[self.moves.index].promotion {
+            let moves = &self.moves.moves[self.moves.index];
+            let dest = (moves.bitboard & self.moves.iterator_mask & BitBoard::upper_mask(self.bit_idx)).to_square();
+
+            // deal with potential promotions for this pawn
+            let result = ChessMove::new(
+                moves.square,
+                dest,
+                Some(PROMOTION_PIECES[self.moves.promotion_index]),
+            );
+            self.moves.promotion_index += 1;
+            if self.moves.promotion_index >= NUM_PROMOTION_PIECES {
+                // moves.bitboard ^= BitBoard::from_square(dest);
+                self.bit_idx = dest.to_int() + 1;
+                self.moves.promotion_index = 0;
+                if moves.bitboard & self.moves.iterator_mask & BitBoard::upper_mask(self.bit_idx) == EMPTY {
+                    self.moves.index += 1;
+                    self.bit_idx = 0;
+                }
+            }
+            Some(result)
+        } else {
+            // not a promotion move, so its a 'normal' move as far as this function is concerned
+            let moves = &self.moves.moves[self.moves.index];
+            let dest = (moves.bitboard & self.moves.iterator_mask & BitBoard::upper_mask(self.bit_idx)).to_square();
+
+            //moves.bitboard ^= BitBoard::from_square(dest);
+            self.bit_idx = dest.to_int() + 1;
+            if self.bit_idx > 63 || moves.bitboard & self.moves.iterator_mask & BitBoard::upper_mask(self.bit_idx) == EMPTY {
+                self.moves.index += 1;
+                self.bit_idx = 0;
+            }
+            Some(ChessMove::new(moves.square, dest, None))
+        }
+    }
+
+    pub fn next_all(&mut self) -> Option<ChessMove> {
+        if self.moves.iterator_mask != !EMPTY {
+            match self.next() {
+                None => self.moves.next(),
+                m => m
+            }
+        } else {
+            self.moves.next()
+        }
+    }
+}
+
+impl Iterator for OrdMoves<'_> {
+    type Item = ChessMove;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // if self.moves.iterator_mask == !EMPTY {
+        //     return self.moves.next();
+        // }
+        loop {
+            if self.moves.is_empty() && self.count[2] >= self.count[3] {
+                if self.piece_idx.0 == 0 {
+                    self.moves.set_iterator_mask(!EMPTY);
+                    // return self.moves.next();
+                    return None;
+                }
+                self.count = [0; 4];
+                self.piece_idx.1 = 0;
+                self.piece_idx.0 -= 1;
+                self.moves.set_iterator_mask(*self.board.pieces(ALL_PIECES[self.piece_idx.0 as usize]));
+            }
+            match self.piece_idx.1 {
+                0 => { // Pawn
+                    while let Some(mv) = self.yeild() {
+                        match self.board.piece_on(mv.get_source()).unwrap() {
+                            Piece::Pawn => return Some(mv),
+                            Piece::Knight => (),
+                            p => self.count[p.to_index() - 2] += 1,
+                        }
+                    }
+                    self.moves.index = 0;
+                    self.piece_idx.1 = 1;
+                    let mut acc = 0;
+                    for i in &mut self.count {
+                        let tmp = *i;
+                        *i = acc;
+                        acc += tmp;
+                    }
+                },
+                1 => { // Knight
+                    while let Some(mv) = self.moves.next() {
+                        match self.board.piece_on(mv.get_source()).unwrap() {
+                            Piece::Pawn => (),
+                            Piece::Knight => return Some(mv),
+                            p => {
+                                self.sorted_mvs[self.count[p.to_index() - 2] as usize].write(mv);
+                                self.count[p.to_index() - 2] += 1;
+                            },
+                        }
+                    }
+                    self.piece_idx.1 = 2;
+                    self.count[2] = 0;
+                },
+                _ => {
+                    if self.count[2] < self.count[3] {
+                        let ret = Some(unsafe { transmute::<_, ChessMove>(self.sorted_mvs[self.count[2] as usize]) } );
+                        self.count[2] += 1;
+                        return ret;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl ExactSizeIterator for OrdMoves<'_> {
+    fn len(&self) -> usize {
+        if self.piece_idx.1 > 1 { (self.count[3] - self.count[2]) as usize } else { self.moves.len() }
+    }
+
+    fn is_empty(&self) -> bool {
+        if self.piece_idx.1 > 1 { self.count[3] - self.count[2] == 0 } else { self.moves.is_empty() }
     }
 }
 
@@ -566,4 +734,28 @@ fn test_masked_move_gen() {
         capture_moves.collect::<HashSet<_>>(),
         expected.into_iter().collect()
     );
+}
+
+#[test]
+fn ordered_moves() {
+    let board = Board::default();
+    let mut moves = OrdMoves::new_ordered(&board).unwrap();
+    let mut acc: u8 = 0;
+    while let Some(mv) = moves.next_all() {
+        acc += 1;
+        println!("Move {:03}: {}", acc, mv);
+    }
+    assert_eq!(acc, 20);
+}
+
+#[test]
+fn ordered_moves_1() {
+    let board = Board::from_str("4k3/8/8/2BN1B2/1q1n3R/P1Q1P2r/1P3NP1/1K6 w - - 0 1").unwrap();
+    let mut moves = OrdMoves::new_ordered(&board).unwrap();
+    let mut acc: u8 = 0;
+    while let Some(mv) = moves.next_all() {
+        acc += 1;
+        println!("Move {:03}: {}", acc, mv);
+    }
+    assert_eq!(acc, 58);
 }

@@ -288,6 +288,12 @@ impl BitBoard {
         BitBoard(1u64 << sq.to_int())
     }
 
+    /// Construct mask for bits above index
+    #[inline]
+    pub fn upper_mask(index: u8) -> BitBoard {
+        !BitBoard(((1 as u64) << index) - 1)
+    }
+
     /// Convert an `Option<Square>` to an `Option<BitBoard>`
     #[inline]
     pub fn from_maybe_square(sq: Option<Square>) -> Option<BitBoard> {

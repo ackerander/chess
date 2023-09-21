@@ -1,4 +1,5 @@
 #![doc(html_root_url = "https://jordanbray.github.io/chess/")]
+#![feature(exact_size_is_empty)]
 //! # Rust Chess Library
 //! This is a chess move generation library for rust.  It is designed to be fast, so that it can be
 //! used in a chess engine or UI without performance issues.
@@ -62,7 +63,7 @@ mod square;
 pub use crate::square::*;
 
 mod movegen;
-pub use crate::movegen::MoveGen;
+pub use crate::movegen::{MoveGen, OrdMoves};
 
 mod zobrist;
 
