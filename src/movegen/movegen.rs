@@ -421,22 +421,7 @@ impl OrdMoves<'_> {
         }
     }
 
-    pub fn next_all(&mut self) -> Option<ChessMove> {
-        if self.moves.iterator_mask != !EMPTY {
-            match self.next() {
-                None => self.moves.next(),
-                m => m
-            }
-        } else {
-            self.moves.next()
-        }
-    }
-}
-
-impl Iterator for OrdMoves<'_> {
-    type Item = ChessMove;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    pub fn next_capture(&mut self) -> Option<ChessMove> {
         // if self.moves.iterator_mask == !EMPTY {
         //     return self.moves.next();
         // }
@@ -492,6 +477,21 @@ impl Iterator for OrdMoves<'_> {
                     }
                 }
             }
+        }
+    }
+}
+
+impl Iterator for OrdMoves<'_> {
+    type Item = ChessMove;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.moves.iterator_mask != !EMPTY {
+            match self.next_capture() {
+                None => self.moves.next(),
+                m => m
+            }
+        } else {
+            self.moves.next()
         }
     }
 }
@@ -739,9 +739,9 @@ fn test_masked_move_gen() {
 #[test]
 fn ordered_moves() {
     let board = Board::default();
-    let mut moves = OrdMoves::new_ordered(&board).unwrap();
+    let moves = OrdMoves::new_ordered(&board).unwrap();
     let mut acc: u8 = 0;
-    while let Some(mv) = moves.next_all() {
+    for mv in moves {
         acc += 1;
         println!("Move {:03}: {}", acc, mv);
     }
@@ -751,9 +751,9 @@ fn ordered_moves() {
 #[test]
 fn ordered_moves_1() {
     let board = Board::from_str("4k3/8/8/2BN1B2/1q1n3R/P1Q1P2r/1P3NP1/1K6 w - - 0 1").unwrap();
-    let mut moves = OrdMoves::new_ordered(&board).unwrap();
+    let moves = OrdMoves::new_ordered(&board).unwrap();
     let mut acc: u8 = 0;
-    while let Some(mv) = moves.next_all() {
+    for mv in moves {
         acc += 1;
         println!("Move {:03}: {}", acc, mv);
     }
